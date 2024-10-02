@@ -1,6 +1,10 @@
 #!/usr/bin/perl -w
 
 
+# CHANGE LOG
+# ----------
+#  2024/09/25 	njeffrey 	Script created
+
 
 # DESCRIPTION
 # -----------
@@ -124,10 +128,6 @@
 # ----------------
 
 
-
-# CHANGE LOG
-# ----------
-#  2024/09/25 	njeffrey 	Script created
 
 
 # NOTES
@@ -657,7 +657,16 @@ sub print_output {
          print "   $output_message | $perf_data \n" if ($verbose eq "yes");
          $error_count++;									#increment counter
       }
+      #
+      # If the switch port has this config:  "port-security violation shutdown", the state of the port will be "shutdown" after a port-security violation
       if ( ($ports{$key}{cpsIfPortSecurityEnable} eq "enabled") && ($ports{$key}{cpsIfPortSecurityStatus} eq "shutdown") ) {   
+         $output_message = "$output_message   $ports{$key}{ifDescr} has been shutdown due to port security violation by MAC address $ports{$key}{cpsIfSecureLastMacAddress}.";
+         print "   $output_message | $perf_data \n" if ($verbose eq "yes");
+         $error_count++;									#increment counter
+      }
+      #
+      # If the switch port has this config:  "port-security violation restrict", the state of the port will be "securedown" after a port-security violation
+      if ( ($ports{$key}{cpsIfPortSecurityEnable} eq "enabled") && ($ports{$key}{cpsIfPortSecurityStatus} eq "securedown") ) {   
          $output_message = "$output_message   $ports{$key}{ifDescr} has been shutdown due to port security violation by MAC address $ports{$key}{cpsIfSecureLastMacAddress}.";
          print "   $output_message | $perf_data \n" if ($verbose eq "yes");
          $error_count++;									#increment counter
