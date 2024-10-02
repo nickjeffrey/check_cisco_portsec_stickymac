@@ -1,0 +1,698 @@
+#!/usr/bin/perl -w
+
+
+
+# DESCRIPTION
+# -----------
+#  This script is a nagios check that checks all the ports on a Cisco Catalyst switch for the following:
+#  Psuedocode of check logic shown below:
+#
+#  if PortState = enabled {
+#     if PortSecurity = enabled {
+#        if PortSecurityViolation = yes {
+#           echo Sending alert because there is a port security violation on this port
+#           send_alert
+#        }
+#        if PortSecurityViolation = no {
+#           if StickyMAC_is_Registered = no {
+#              echo Sending alert because there is no sticky MAC registered on this port, but there should be.
+#              send_alert    
+#           }
+#        }
+#     }
+#  }
+#    
+#     
+
+
+# IMPORTANT OID values:
+# 
+# We use this MIB to get the human-readable names of each port:
+# IF-MIB::ifDescr  1.3.6.1.2.1.2.2.1.2
+# For example: 
+# # snmpwalk -v 1 -c public switch2.example.com  .1.3.6.1.2.1.2.2.1.2
+# IF-MIB::ifDescr.1 = STRING: GigabitEthernet0/0
+# IF-MIB::ifDescr.2 = STRING: Bluetooth0/4
+# IF-MIB::ifDescr.3 = STRING: Null0
+# IF-MIB::ifDescr.4 = STRING: unrouted VLAN 1
+# IF-MIB::ifDescr.5 = STRING: unrouted VLAN 1002
+# IF-MIB::ifDescr.6 = STRING: unrouted VLAN 1004
+# IF-MIB::ifDescr.7 = STRING: unrouted VLAN 1005
+# IF-MIB::ifDescr.8 = STRING: unrouted VLAN 1003
+# IF-MIB::ifDescr.9 = STRING: GigabitEthernet1/0/1
+# IF-MIB::ifDescr.10 = STRING: GigabitEthernet1/0/2
+# IF-MIB::ifDescr.11 = STRING: GigabitEthernet1/0/3
+# IF-MIB::ifDescr.12 = STRING: GigabitEthernet1/0/4
+# IF-MIB::ifDescr.13 = STRING: GigabitEthernet1/0/5
+# IF-MIB::ifDescr.14 = STRING: GigabitEthernet1/0/6
+# IF-MIB::ifDescr.15 = STRING: GigabitEthernet1/0/7
+# IF-MIB::ifDescr.16 = STRING: GigabitEthernet1/0/8
+# IF-MIB::ifDescr.17 = STRING: GigabitEthernet1/0/9
+# IF-MIB::ifDescr.18 = STRING: GigabitEthernet1/0/10
+# IF-MIB::ifDescr.19 = STRING: GigabitEthernet1/0/11
+# IF-MIB::ifDescr.20 = STRING: GigabitEthernet1/0/12
+# IF-MIB::ifDescr.21 = STRING: GigabitEthernet1/0/13
+# IF-MIB::ifDescr.22 = STRING: GigabitEthernet1/0/14
+# IF-MIB::ifDescr.23 = STRING: GigabitEthernet1/0/15
+# IF-MIB::ifDescr.24 = STRING: GigabitEthernet1/0/16
+# IF-MIB::ifDescr.25 = STRING: GigabitEthernet1/0/17
+# IF-MIB::ifDescr.26 = STRING: GigabitEthernet1/0/18
+# IF-MIB::ifDescr.27 = STRING: GigabitEthernet1/0/19
+# IF-MIB::ifDescr.28 = STRING: GigabitEthernet1/0/20
+# IF-MIB::ifDescr.29 = STRING: GigabitEthernet1/0/21
+# IF-MIB::ifDescr.30 = STRING: GigabitEthernet1/0/22
+# IF-MIB::ifDescr.31 = STRING: GigabitEthernet1/0/23
+# IF-MIB::ifDescr.32 = STRING: GigabitEthernet1/0/24
+# IF-MIB::ifDescr.33 = STRING: TenGigabitEthernet1/1/1
+# IF-MIB::ifDescr.34 = STRING: TenGigabitEthernet1/1/2
+# IF-MIB::ifDescr.35 = STRING: TenGigabitEthernet1/1/3
+# IF-MIB::ifDescr.36 = STRING: TenGigabitEthernet1/1/4
+# IF-MIB::ifDescr.37 = STRING: StackPort1
+# IF-MIB::ifDescr.38 = STRING: StackSub-St1-1
+# IF-MIB::ifDescr.39 = STRING: StackSub-St1-2
+# IF-MIB::ifDescr.40 = STRING: Vlan1
+
+
+
+
+# The full name of CISCO-PORT-SECURITY-MIB is:
+# .iso.org.dod.internet.private.enterprises.cisco.ciscoMgmt.ciscoPortSecurityMIB                                 1.3.6.1.4.1.9.9.315
+#
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBNotifs                                                             1.3.6.1.4.1.9.9.315.0
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBObjects                                                            1.3.6.1.4.1.9.9.315.1
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBObjects.cpsInterfaceObjects                                        1.3.6.1.4.1.9.9.315.1.2
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBObjects.cpsInterfaceObjects.cpsIfConfigTable                       1.3.6.1.4.1.9.9.315.1.2.1
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBObjects.cpsInterfaceObjects.cpsIfConfigTable.cpsIfConfigEntry      1.3.6.1.4.1.9.9.315.1.2.1.1  Entry containing port security information for a particular interface.
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBObjects.cpsInterfaceObjects.cpsIfConfigTable.cpsIfConfigEntry.cpsIfPortSecurityEnable   1.3.6.1.4.1.9.9.315.1.2.1.1.1  
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBObjects.cpsInterfaceObjects.cpsIfConfigTable.cpsIfConfigEntry.cpsIfPortSecurityStatus   1.3.6.1.4.1.9.9.315.1.2.1.1.2
+# CISCO-PORT-SECURITY-MIB::ciscoPortSecurityMIBObjects.cpsInterfaceObjects.cpsIfConfigTable.cpsIfConfigEntry.cpsIfSecureLastMacAddress 1.3.6.1.4.1.9.9.315.1.2.1.1.10
+
+
+
+
+# These values under the  CISCO-PORT-SECURITY-MIB are what we are most interested in:
+# cpsIfPortSecurityEnable   1.3.6.1.4.1.9.9.315.1.2.1.1.1    Indicates whether the port security feature is enabled on an interface.  1=enabled 2=disabled
+#
+# cpsIfPortSecurityStatus   1.3.6.1.4.1.9.9.315.1.2.1.1.2    Operational status of the port security feature on an interface. Possible values are:
+#                                                            1=secureup    (indicates that port security is operational)
+#                                                            2=securedown  (This happens when port security is configured to be enabled but could not be enabled due to certain reasons such as conflict with other features.)
+#                                                            3=shutdown    (indicates that the port is shutdown due to port security violation when the object cpsIfViolationAction is of type 'shutdown'.)
+#
+# cpsIfSecureLastMacAddress 1.3.6.1.4.1.9.9.315.1.2.1.1.10   The last secure MAC address that is learned or configured on this interface.
+#                                                            This object is also used as a variable in the cpsSecureMacAddrViolation notification to contain the value of the MAC address which caused the violation.
+
+
+# it is assumed that the monitored Cisco switch has port-security configured.  For example:
+# switch2> enable
+# switch2# config terminal
+# switch2# config terminal
+# switch2# interface GigabitEthernet1/0/21
+# switch2(config-if)#switchport mode access
+# switch2(config-if)#switchport port-security
+# switch2(config-if)#switchport port-security maximum 1
+# switch2(config-if)#switchport port-security mac-address sticky
+# switch2(config-if)#switchport port-security security-violation protect|restrict|shutdown   <--choose one action
+
+# The protect|restrict|shutdown actions do this when a violation is detected:
+# protect  discards the traffic but keeps the port up and does not send an SNMP message.
+# restrict discards the traffic and sends an SNMP message but keeps the port up
+# shutdown discards the traffic sends an SNMP message and disables the port. (This is the default behavior is no setting is specified.) 
+
+
+
+# OUTSTANDING TASKS
+# ----------------
+
+
+
+# CHANGE LOG
+# ----------
+#  2024/09/25 	njeffrey 	Script created
+
+
+# NOTES
+# -----
+#
+#  Tested on Cisco IOS 16.x and 17.x, using devices that support the following MIBS:
+#
+#
+#
+#  This script should return one (and only one) line of ouput.  Multiple lines of output are silently ignored by nagios.
+#
+#  The line of output will become the body of the alert message sent by nagios
+#
+#
+#  You will need a section in the services.cfg
+#  file on the nagios server that looks similar to the following.
+#   # Parameters are SNMP community name and "Name of Service"
+#   define service{
+#           use                             generic-service
+#           host_name                       switch1,switch2
+#           service_description             PortSecurity StickyMAC
+#           check_command                   check_cisco_portsec_stickymac!public
+#           }
+#
+#  You will need a section in the commands.cfg
+#  file on the nagios server that looks similar to the following.
+#     # ---------------------------------------------------------------------------
+#     # 'check_cisco_portsec_stickymac' command definition for monitoring Port Security on Cisco switch
+#     # parameters are -H hostname -C snmp_community
+#     define command{
+#             command_name    check_cisco_portsec_stickymac
+#             command_line    $USER1$/check_cisco_portsec_stickymac -H $HOSTADDRESS$ -c $ARG1$
+#             }
+#
+#
+#
+
+
+use strict;					#enforce good coding practices
+use Getopt::Long;                       	#allow --long-switches to be used as parameters
+
+
+# declare variables
+my ($OK,$WARN,$CRITICAL,$UNKNOWN);
+my ($CHECK_NAME,$host,$community,$community_default);
+my (%ports,$key,$output_message,$perf_data,$sysdescr);
+my ($opt_c,$opt_h,$opt_v,$opt_H);
+my ($verbose,$oid,$session,$error,$result);
+my ($pingstatus,$servicename);
+my ($cmd,$snmpget,$snmpwalk);
+my ($error_count);
+$community_default  = "public";			#use this value if user does not specify SNMP community string
+$CHECK_NAME         = "PortSecurity";
+$verbose            = "no";			#yes/no flag for debugging
+$snmpget            = "/usr/bin/snmpget";	#location of binary
+$snmpwalk           = "/usr/bin/snmpwalk";	#location of binary
+
+
+#
+# Nagios return codes
+#
+$OK       = 0;
+$WARN     = 1;
+$CRITICAL = 2;
+$UNKNOWN  = 3;
+
+
+
+
+
+sub get_options {
+   #
+   # this gets the command line parameters provided by the users
+   print "running get_options subroutine \n" if ($verbose eq "yes");
+   #
+   Getopt::Long::Configure('bundling');
+   GetOptions(
+      "h"   => \$opt_h, "help"          => \$opt_h,
+      "v"   => \$opt_v, "verbose"       => \$opt_v,
+      "c=s" => \$opt_c, "community=s"   => \$opt_c, 
+      "H=s" => \$opt_H, "host=s"        => \$opt_H, 
+   );
+   #
+   # If the user did not supply a --community= value, use the default.
+   #
+   if( defined( $opt_c ) ) {
+      $community = $opt_c;
+   } else {
+      $community = $community_default;
+   }
+   #
+   # If the user did not supply a -H or --host== value, generate a warning.
+   #
+   if( defined( $opt_H ) ) {
+      $host = $opt_H;
+   } else {
+      print "$CHECK_NAME Unknown - cannot determine remote host.  Usage: $0 -H host -c community \n";
+      exit $UNKNOWN;					#exit script
+   }
+   #
+   # If the user supplied -v or --verbose switch, increase script output verbosity for debugging
+   if( defined( $opt_v ) ) {
+      $verbose = "yes";
+   }
+   print "   host=$host community=$community  \n" if ($verbose eq "yes");
+}                       				#end of subroutine
+
+
+
+
+sub sanity_checks {
+   #
+   print "running sanity_checks subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   #
+   # Confirm required files exist 
+   # 
+   $snmpget = "/usr/local/bin/snmpget"   if ( -e "/usr/local/bin/snmpget" );
+   $snmpget = "/usr/bin/snmpget"          if ( -e "/usr/bin/snmpget" );
+   if ( ! -f "$snmpget" ) {
+      print "ERROR: Cannot find $snmpget \n";
+      exit;
+   }
+   if ( ! -x "$snmpget" ) {
+      print "ERROR: $snmpget is not executable by the current user\n";
+      exit;
+   }
+   $snmpwalk = "/usr/local/bin/snmpwalk"   if ( -e "/usr/local/bin/snmpget" );
+   $snmpwalk = "/usr/bin/snmpwalk"         if ( -e "/usr/bin/snmpget" );
+   if ( ! -f "$snmpwalk" ) {
+      print "ERROR: Cannot find $snmpwalk \n";
+      exit;
+   }
+   if ( ! -x "$snmpwalk" ) {
+      print "ERROR: $snmpwalk is not executable by the current user\n";
+      exit;
+   }
+   #
+   # confirm a remote host is defined
+   if( ! defined( $host ) ) {
+      print "$CHECK_NAME Unknown - missing name of remote host to check.  Use $0 -h for help\n";
+      exit $UNKNOWN;                                    #exit script
+   }
+}							#end of subroutine
+
+
+
+
+sub get_usage {
+   #
+   # this subroutine gets called if user enters -h or --help parameters
+   print "running get_usage subroutine \n" if ($verbose eq "yes");
+   #
+   if( $opt_h ) {
+      print "Nagios plugin for determining health of Brocade fibre switch \n";
+      print "$0 [options]  \n";
+      print "    where options are: \n";
+      print "    -c --community=SNMP_community_string     (default=public)\n";
+      print "    -h --help \n";
+      print "    -H --host=IP|hostname \n";
+      print "\n\n";
+      exit;
+   }                                            	#end of if block
+}							#end of subroutine
+
+
+
+
+sub ping_remote_host {
+   #
+   print "running ping_remote_host subroutine \n" if ($verbose eq "yes");
+   #
+   # Confirm the remote host is up
+   #
+   print "trying to ping $host \n" if ($verbose eq "yes");
+   open(IN,"ping -c 4 -w 4 $host 2>&1 |");         	#send up to 4 pings and wait up to 4 seconds for reply
+   while (<IN>) {                                  	#read a line from STDIN
+      if ( /100% packet loss/ ) {                  	#check for ping timeouts (indicates host may be down)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- no ping reply from $host \n";
+         print $pingstatus;                            	#print error message
+         exit $UNKNOWN;                            	#exit script
+      }                                            	#end of if block
+      if ( /NOT FOUND/ ) {                         	#check for invalid hostname (using AIX ping)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not resolve hostname $host \n";
+         print $pingstatus;                            	#print error message
+         exit $UNKNOWN;                            	#exit script
+      }                                            	#end of if block
+      if ( /unknown host/ ) {                      	#check for invalid hostname (using Linux ping)
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not resolve hostname $host \n";
+         print $pingstatus;                            	#print error message
+         exit $UNKNOWN;                            	#exit script
+      }                                            	#end of if block
+      if ( /no route to host/ ) {                  	#check for routing problems
+         $pingstatus = "$CHECK_NAME UNKNOWN -- could not find a route to $host - check routing tables \n";
+         print $pingstatus;                            	#print error message
+         exit $UNKNOWN;                            	#exit script
+      }                                            	#end of if block
+   }                                               	#end of while loop
+   close IN;                                       	#close filehandle
+}							#end of subroutine
+
+
+
+
+
+
+
+
+
+
+sub get_ciscoios_version {
+   #
+   print "running get_ciscoios_version subroutine \n" if ($verbose eq "yes");
+   #
+   # This subroutine will check the SNMPv2-MIB::sysDescr.0 OID to confirm this is a Cisco device.
+   # This is also a sanity check that cnrims the remote host has a listening SNMP daemon
+   #
+   # Sample output showing system description for various devices.
+   #   $ snmpget -Onq  -v 1 -c public switch2.example.com 1.3.6.1.2.1.1.1.0
+   # .1.3.6.1.2.1.1.1.0 Cisco IOS Software [Amsterdam], Catalyst L3 Switch Software (CAT9K_LITE_IOSXE), Version 17.3.4b, RELEASE SOFTWARE (fc1)
+   # .1.3.6.1.2.1.1.1.0 Cisco IOS Software [Gibraltar], Catalyst L3 Switch Software (CAT9K_LITE_IOSXE), Version 16.12.3a, RELEASE SOFTWARE (fc1)
+   #
+   #
+   #
+   #
+   $sysdescr = "";                                                      #initialize variable to avoid undef errors
+   $oid = ".1.3.6.1.2.1.1.1.0"; 					#SNMP OID for SNMPv2-MIB::sysDescr.0
+   $cmd = "$snmpget -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      if ( /$oid (.*)/ ) { 							#confirm the OID is returned,
+         $sysdescr = $1;						#assign more mnemonic variable name
+         if ($sysdescr =~ /Cisco IOS/) {					#
+            print "   Found Cisco IOS device: $sysdescr \n" if ($verbose eq "yes");
+         } else {
+            print "   Found non-Cisco IOS device: $sysdescr \n" if ($verbose eq "yes");
+            print "$CHECK_NAME WARN - sysDescr indicates this is not a Cisco IOS device, so cannot be checked for Cisco IOS port security violations: $sysdescr \n";
+            exit $WARN;							#exit script 
+         } 								#end of unless block
+      } 								#end of if block
+    
+   }									#end of while loop
+   close IN;								#close filehandle
+   # We should only get this far if there was no SNMP response at all
+   unless ( $sysdescr =~ /Cisco IOS/ ) {
+      print "$CHECK_NAME WARN - could not query $host via SNMP.  Confirm you have the correct SNMP community string and the remote host $host has a working SNMP daemon.\n";
+      exit $WARN;							#exit script 
+   }									#end of unless block
+}									#end of subroutine
+
+
+
+
+
+sub get_port_descriptions {
+   #
+   print "running get_port_descriptions subroutine \n" if ($verbose eq "yes");
+   #
+   # This portion of the MIB tree contains all the port descriptions
+   # We will do some fancy regex to strip out all the hard to read deep OID values
+   #
+   # # snmpwalk -Onq -v 1 -c public switch2.example.com .1.3.6.1.2.1.2.2.1.2
+   # .1.3.6.1.2.1.2.2.1.2.1 GigabitEthernet0/0
+   # .1.3.6.1.2.1.2.2.1.2.2 Bluetooth0/4
+   # .1.3.6.1.2.1.2.2.1.2.3 Null0
+   # .1.3.6.1.2.1.2.2.1.2.4 unrouted VLAN 1
+   # .1.3.6.1.2.1.2.2.1.2.5 unrouted VLAN 1002
+   # .1.3.6.1.2.1.2.2.1.2.6 unrouted VLAN 1004
+   # .1.3.6.1.2.1.2.2.1.2.7 unrouted VLAN 1005
+   # .1.3.6.1.2.1.2.2.1.2.8 unrouted VLAN 1003
+   # .1.3.6.1.2.1.2.2.1.2.9 GigabitEthernet1/0/1
+   # .1.3.6.1.2.1.2.2.1.2.10 GigabitEthernet1/0/2
+   # .1.3.6.1.2.1.2.2.1.2.11 GigabitEthernet1/0/3
+   # .1.3.6.1.2.1.2.2.1.2.12 GigabitEthernet1/0/4
+   #
+   $oid = ".1.3.6.1.2.1.2.2.1.2";                                  	#top-level SNMP OID for IF-MIB:ifDescr
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      s/"//g;								#get rid of quotation marks
+      if ( /$oid([0-9\.]+) (.*)/ ) { 					#look for a response to the snmp query
+         $ports{$1}{index} = $1;					#parse out the section of the OID that represents the index number in the MIB tree
+         $ports{$1}{ifDescr}  = $2;					#parse out the human-readable port description
+         print "   OID:$oid portIndex:$ports{$1}{index} ifDescr:$ports{$1}{ifDescr} \n" if ($verbose eq "yes");
+      } 								#end of if block
+   }									#end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine
+
+
+sub get_port_adminstatus {
+   #
+   print "running get_port_adminstatus subroutine \n" if ($verbose eq "yes");
+   #
+   # This portion of the MIB tree contains all the port status from IF-MIB::ifAdminStatus
+   # We will do some fancy regex to strip out all the hard to read deep OID values
+   #
+   # # snmpwalk -Onq -v 1 -c public switch2.example.com .1.3.6.1.2.1.2.2.1.7
+   # .1.3.6.1.2.1.2.2.1.7.1 down
+   # .1.3.6.1.2.1.2.2.1.7.2 down
+   # .1.3.6.1.2.1.2.2.1.7.3 up
+   # .1.3.6.1.2.1.2.2.1.7.4 up
+   # .1.3.6.1.2.1.2.2.1.7.5 up
+   # .1.3.6.1.2.1.2.2.1.7.6 up
+   # .1.3.6.1.2.1.2.2.1.7.7 up
+   # .1.3.6.1.2.1.2.2.1.7.8 up
+   # .1.3.6.1.2.1.2.2.1.7.9 up
+
+   $oid = ".1.3.6.1.2.1.2.2.1.7";                                  	#top-level SNMP OID for IF-MIB:ifDescr
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      s/"//g;								#get rid of quotation marks
+      if ( /$oid([0-9\.]+) ([a-z]+)/ ) { 				#look for a response to the snmp query
+         $ports{$1}{index} = $1;					#parse out the section of the OID that represents the index number in the MIB tree
+         $ports{$1}{ifAdminStatus}  = $2;					#parse out the hunam-readable port description
+         print "   OID:$oid portIndex:$ports{$1}{index} ifDescr:$ports{$1}{ifDescr} ifAdminStatus:$ports{$1}{ifAdminStatus} \n" if ($verbose eq "yes");
+      } 								#end of if block
+   }									#end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine
+
+
+
+
+sub get_portsecurity_enabled_state {
+   #
+   print "running get_portsecurity_status subroutine \n" if ($verbose eq "yes");
+   #
+   # These are the  portions of the CISCO-PORTSECURITY-MIB tree we are interested in:
+   #
+   # cpsIfPortSecurityEnable   1.3.6.1.4.1.9.9.315.1.2.1.1.1    Indicates whether the port security feature is enabled on an interface.  1=enabled 2=disabled
+   # # snmpwalk -Onq -v 1 -c public switch2.example.com .1.3.6.1.4.1.9.9.315.1.2.1.1.1
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.1.9 2     
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.1.10 2   
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.1.11 2  
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.1.12 1 
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.1.13 1
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.1.14 1  
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.1.15 1  
+   #
+   #
+   #
+   #
+   #
+   $oid = ".1.3.6.1.4.1.9.9.315.1.2.1.1.1";                            	#top-level SNMP OID for cpsIfPortSecurityEnable
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      s/"//g;								#get rid of quotation marks
+      if ( /$oid([0-9\.]+) ([0-9]+)/ ) { 				#look for a response to the snmp query 1=enabled 2=disabled
+         $ports{$1}{index} = $1;					#parse out the section of the OID that represents the index number in the MIB tree
+         $ports{$1}{cpsIfPortSecurityEnable}  = $2;			#parse out the value of cpsIfPortSecurityEnable
+         $ports{$1}{cpsIfPortSecurityEnable} = "enabled"  if ( $ports{$1}{cpsIfPortSecurityEnable} eq "1");  #convert integer to human readable value
+         $ports{$1}{cpsIfPortSecurityEnable} = "disabled" if ( $ports{$1}{cpsIfPortSecurityEnable} eq "2");  #convert integer to human readable value
+         print "   OID:$oid portIndex:$ports{$1}{index} ifDescr:$ports{$1}{ifDescr} cpsIfPortSecurityEnable:$ports{$1}{cpsIfPortSecurityEnable} \n" if ($verbose eq "yes");
+      } 								#end of if block
+   }									#end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine
+
+
+
+
+
+
+
+sub get_portsecurity_status { 
+   #
+   print "running get_portsecurity_status subroutine \n" if ($verbose eq "yes");
+   #
+   # These are the  portions of the CISCO-PORTSECURITY-MIB tree we are interested in:
+   #
+   # cpsIfPortSecurityStatus   1.3.6.1.4.1.9.9.315.1.2.1.1.2    Operational status of the port security feature on an interface. Possible values are:
+   #                                   1=secureup    (indicates that port security is operational)
+   #                                   2=securedown  (This happens when port security is configured to be enabled but could not be enabled due to certain reasons such as conflict with other features.)
+   #                                   3=shutdown    (indicates that the port is shutdown due to port security violation when the object cpsIfViolationAction is of type 'shutdown'.)
+   #
+   # # snmpwalk -Onq -v 1 -c public switch2.example.com .1.3.6.1.4.1.9.9.315.1.2.1.1.2
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.9 2     2=securedown    
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.10 2    2=securedown    # BUG ALERT not sure if these integers are correct
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.11 2    2=securedown
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.12 1    1=secureup    
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.13 1    1=secureup
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.14 1    1=secureup
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.15 1    1=secureup
+   #
+
+   #
+   #
+   $oid = ".1.3.6.1.4.1.9.9.315.1.2.1.1.2";                            	#top-level SNMP OID for cpsIfPortSecurityStatus
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      s/"//g;								#get rid of quotation marks
+      if ( /$oid([0-9\.]+) ([0-9]+)/ ) { 				#look for a response to the snmp query
+         $ports{$1}{index} = $1;					#parse out the section of the OID that represents the index number in the MIB tree
+         $ports{$1}{cpsIfPortSecurityStatus}  = $2;			#parse out the value of cpsIfPortSecurityStatus
+         $ports{$1}{cpsIfPortSecurityStatus} = "secureup"   if ( $ports{$1}{cpsIfPortSecurityStatus} eq "1");  #convert integer to human readable value
+         $ports{$1}{cpsIfPortSecurityStatus} = "securedown" if ( $ports{$1}{cpsIfPortSecurityStatus} eq "2");  #convert integer to human readable value
+         $ports{$1}{cpsIfPortSecurityStatus} = "shutdown"   if ( $ports{$1}{cpsIfPortSecurityStatus} eq "3");  #convert integer to human readable value
+         print "   OID:$oid portIndex:$ports{$1}{index} ifDescr:$ports{$1}{ifDescr} cpsIfPortSecurityEnable:$ports{$1}{cpsIfPortSecurityEnable} cpsIfPortSecurityStatus:$ports{$1}{cpsIfPortSecurityStatus} \n" if ($verbose eq "yes");
+      } 								#end of if block
+   }									#end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine
+
+
+sub get_portsecurity_sticky { 
+   #
+   print "running get_portsecurity_sticky subroutine \n" if ($verbose eq "yes");
+   #
+   # These are the  portions of the CISCO-PORTSECURITY-MIB tree we are interested in:
+   #
+   # cpsIfStickyEnable   1.3.6.1.4.1.9.9.315.1.2.1.1.15    Operational status of the port sticky feature on an interface. Possible values are: 1=true 2=false
+   # Set to 'true' to enable and 'false' to disable Sticky port security feature on this interface. Enabling this feature allows the device to secure learned MAC addresses on this
+   # interface permanently. In order to remove the sticky addresses on this interface, user has to manually delete the sticky MAC address(es) or disable the sticky feature itself. Manual deletion
+   # of all addresses can be accomplished by cpsIfClearSecureMacAddresses object. Manual of single address can be accomplished by cpsIfVlanSecureMacAddrRowStatus object.
+   #
+   # # snmpwalk -Onq -v 1 -c public switch2.example.com .1.3.6.1.4.1.9.9.315.1.2.1.1.15
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.9 2     2=disabled   
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.10 2    2=disabled    # BUG ALERT not sure if these integers are correct
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.11 2    2=disabled
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.12 1    1=enabled    
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.13 1    1=enabled
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.14 1    1=enabled
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.2.15 1    1=enabled
+   #
+
+   #
+   #
+   $oid = ".1.3.6.1.4.1.9.9.315.1.2.1.1.15";                           	#top-level SNMP OID for cpsIfPortSecurityStatus
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      s/"//g;								#get rid of quotation marks
+      if ( /$oid([0-9\.]+) ([0-9]+)/ ) { 				#look for a response to the snmp query
+         $ports{$1}{index} = $1;					#parse out the section of the OID that represents the index number in the MIB tree
+         $ports{$1}{cpsIfStickyEnable}  = $2;			#parse out the value of cpsIfPortSecurityStatus
+         $ports{$1}{cpsIfStickyEnable} = "enabled"  if ( $ports{$1}{cpsIfStickyEnable} eq "1");  #convert integer to human readable value
+         $ports{$1}{cpsIfStickyEnable} = "disabled" if ( $ports{$1}{cpsIfStickyEnable} eq "2");  #convert integer to human readable value
+         print "   OID:$oid portIndex:$ports{$1}{index} ifDescr:$ports{$1}{ifDescr} cpsIfPortSecurityEnable:$ports{$1}{cpsIfPortSecurityEnable} cpsIfPortSecurityStatus:$ports{$1}{cpsIfPortSecurityStatus} cpsIfStickyEnable:$ports{$1}{cpsIfStickyEnable} \n" if ($verbose eq "yes");
+      } 								#end of if block
+   }									#end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine
+
+
+
+
+sub get_portsecurity_macaddr {
+   #
+   print "running get_portsecurity_macaddr subroutine \n" if ($verbose eq "yes");
+   #
+   # These are the  portions of the CISCO-PORTSECURITY-MIB tree we are interested in:
+   #
+   # cpsIfSecureLastMacAddress 1.3.6.1.4.1.9.9.315.1.2.1.1.10   The last secure MAC address that is learned or configured on this interface.
+   #                                                            This object is also used as a variable in the cpsSecureMacAddrViolation notification to contain the value of the MAC address which caused the violation.
+   # # snmpwalk -Onq -v 1 -c public switch2.example.com .1.3.6.1.4.1.9.9.315.1.2.1.1.10
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.10.9 "00 00 00 00 00 00 "      (all zeros indicates there is no sticky MAC address)
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.10.10 "DE AD BE EF 00 00 "
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.10.11 "DE AD BE EF 00 01 "     (sample MAC addresses only)
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.10.12 "DE AD BE EF 00 02 "
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.10.13 "DE AD BE EF 00 03 "
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.10.14 "DE AD BE EF 00 04 "
+   # .1.3.6.1.4.1.9.9.315.1.2.1.1.10.15 "DE AD BE EF 00 05 "
+   #
+   #
+   my $index = 0;
+   my $scratch = "";
+   $oid = ".1.3.6.1.4.1.9.9.315.1.2.1.1.10";                           	#top-level SNMP OID for cpsIfSecureLastMacAddress
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      s/"//g;								#get rid of quotation marks
+      if ( /$oid([0-9\.]+) ([0-9A-Fa-f ]+)/ ) { 			#look for a response to the snmp query 
+         $index = $1;
+         $ports{$index}{index} = $index;				#parse out the section of the OID that represents the index number in the MIB tree
+         $scratch = $2; 						#put macaddr into temporary variable for cleanup
+         $scratch =~ s/ //g; 				 		#remove embedded spaces in MAC address to make parsing easier
+         $ports{$index}{cpsIfSecureLastMacAddress}  = $scratch;		#saved cleaned up macaddr into hash element
+         #$ports{$index}{cpsIfSecureLastMacAddress}  =~ s/ //g;		#remove embedded spaces in MAC address to make parsing easier
+         print "   OID:$oid portIndex:$ports{$index}{index} ifDescr:$ports{$index}{ifDescr} " if ($verbose eq "yes");
+         print "cpsIfPortSecurityEnable:$ports{$index}{cpsIfPortSecurityEnable} cpsIfPortSecurityStatus:$ports{$index}{cpsIfPortSecurityStatus} " if ($verbose eq "yes");
+         print "cpsIfSecureLastMacAddress:$ports{$index}{cpsIfSecureLastMacAddress} \n" if ($verbose eq "yes");
+      } 								#end of if block
+   }									#end of while loop
+   close IN;								#close filehandle
+
+}									#end of subroutine
+
+
+
+
+
+sub print_output {
+   #
+   print "running print_output subroutine \n" if ($verbose eq "yes");
+   #
+   #
+   # build an output message that contains all the information
+   #
+   $error_count = 0;										#initialize variable
+   $output_message = "";									#initialize variable
+   $perf_data = "";										#initialize variable, this check does not have any performance data
+   foreach $key (sort keys %ports) {
+      next unless ($ports{$key}{index});							#skip any missing hash elements to avoid undef errors
+      next unless ($ports{$key}{ifAdminStatus} eq "up");					#skip any ports that are administratively down
+      next unless ($ports{$key}{cpsIfPortSecurityEnable});					#some ports are not capable of port security, so will not have an SNMP OID 
+      next if ( ($ports{$key}{cpsIfPortSecurityEnable}) && ($ports{$key}{cpsIfPortSecurityEnable} eq "disabled") ); #skip any ports that support port-security but do not have port-security enabled
+      # BUG ALERT: to be added, add a line here to skip ports that do not have: switchport port-security mac-address sticky
+
+      #
+      # Find any ports that have port security enabled, but there is not a MAC address on the port
+      # This section will find ALL ports with problems and make one long message containing all the problematic ports.
+      #
+      if ( ($ports{$key}{cpsIfPortSecurityEnable} eq "enabled") && ($ports{$key}{cpsIfSecureLastMacAddress} eq "000000000000") ) {   
+         $output_message = "$output_message    $ports{$key}{ifDescr} has port security enabled but no MAC address is on the port.";
+         print "   $output_message | $perf_data \n" if ($verbose eq "yes");
+         $error_count++;									#increment counter
+      }
+      if ( ($ports{$key}{cpsIfPortSecurityEnable} eq "enabled") && ($ports{$key}{cpsIfPortSecurityStatus} eq "shutdown") ) {   
+         $output_message = "$output_message   $ports{$key}{ifDescr} has been shutdown due to port security violation by MAC address $ports{$key}{cpsIfSecureLastMacAddress}.";
+         print "   $output_message | $perf_data \n" if ($verbose eq "yes");
+         $error_count++;									#increment counter
+      }
+   } 												#end of foreach block
+   #
+   # Alert on any errors found
+   if ($error_count > 0) {
+      print "$CHECK_NAME WARN $error_count port-security errors found.  $output_message | $perf_data \n";
+      exit $WARN;
+   } 
+   #
+   # If we get this far, all ports are fine
+   if ($error_count == 0) {
+      print "$CHECK_NAME OK all ports are in expected state | $perf_data \n";
+      exit $OK;
+   } 
+}						#end of subroutine
+
+
+
+
+
+
+# ----------------------- main body of program -------------------------------
+get_options;
+sanity_checks;
+get_usage;
+ping_remote_host;
+get_ciscoios_version;
+get_port_descriptions;
+get_port_adminstatus;
+get_portsecurity_enabled_state;
+get_portsecurity_status;
+get_portsecurity_sticky;
+get_portsecurity_macaddr;
+print_output;
+
