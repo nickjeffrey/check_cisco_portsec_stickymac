@@ -421,6 +421,7 @@ sub get_port_descriptions {
 }									#end of subroutine
 
 
+
 sub get_port_adminstatus {
    #
    print "running get_port_adminstatus subroutine \n" if ($verbose eq "yes");
@@ -457,9 +458,45 @@ sub get_port_adminstatus {
 
 
 
+sub get_port_operstatus {
+   #
+   print "running get_port_operstatus subroutine \n" if ($verbose eq "yes");
+   #
+   # This portion of the MIB tree contains all the port status from IF-MIB::ifOperStatus
+   # We will do some fancy regex to strip out all the hard to read deep OID values
+   #
+   # # snmpwalk -Onq -v 1 -c public switch2.example.com .1.3.6.1.2.1.2.2.1.8
+   # .1.3.6.1.2.1.2.2.1.8.1 down
+   # .1.3.6.1.2.1.2.2.1.8.2 down
+   # .1.3.6.1.2.1.2.2.1.8.3 up
+   # .1.3.6.1.2.1.2.2.1.8.4 up
+   # .1.3.6.1.2.1.2.2.1.8.5 up
+   # .1.3.6.1.2.1.2.2.1.8.6 up
+   # .1.3.6.1.2.1.2.2.1.8.7 up
+   # .1.3.6.1.2.1.2.2.1.8.8 up
+   # .1.3.6.1.2.1.2.2.1.8.9 up
+
+   $oid = ".1.3.6.1.2.1.2.2.1.8";                                  	#top-level SNMP OID for IF-MIB:ifDescr
+   $cmd = "$snmpwalk -Onq -v 1 -c $community $host $oid 2>&1"; 		#define command to be run
+   print "   running command: $cmd \n" if ($verbose eq "yes");
+   open(IN,"$cmd |"); 							#open a filehandle for reading 
+   while (<IN>) {                          				#read a line from STDIN
+      s/"//g;								#get rid of quotation marks
+      if ( /$oid([0-9\.]+) ([a-z]+)/ ) { 				#look for a response to the snmp query
+         $ports{$1}{index} = $1;					#parse out the section of the OID that represents the index number in the MIB tree
+         $ports{$1}{ifOperStatus}  = $2;					#parse out the hunam-readable port description
+         print "   OID:$oid portIndex:$ports{$1}{index} ifDescr:$ports{$1}{ifDescr} ifOperStatus:$ports{$1}{ifOperStatus} \n" if ($verbose eq "yes");
+      } 								#end of if block
+   }									#end of while loop
+   close IN;								#close filehandle
+}									#end of subroutine
+
+
+
+
 sub get_portsecurity_enabled_state {
    #
-   print "running get_portsecurity_status subroutine \n" if ($verbose eq "yes");
+   print "running get_portsecurity_enabled_state subroutine \n" if ($verbose eq "yes");
    #
    # These are the  portions of the CISCO-PORTSECURITY-MIB tree we are interested in:
    #
@@ -644,6 +681,7 @@ sub print_output {
    foreach $key (sort keys %ports) {
       next unless ($ports{$key}{index});							#skip any missing hash elements to avoid undef errors
       next unless ($ports{$key}{ifAdminStatus} eq "up");					#skip any ports that are administratively down
+      next unless ($ports{$key}{ifOperStatus} eq "up");						#skip any ports that are operationally down
       next unless ($ports{$key}{cpsIfPortSecurityEnable});					#some ports are not capable of port security, so will not have an SNMP OID 
       next if ( ($ports{$key}{cpsIfPortSecurityEnable}) && ($ports{$key}{cpsIfPortSecurityEnable} eq "disabled") ); #skip any ports that support port-security but do not have port-security enabled
       # BUG ALERT: to be added, add a line here to skip ports that do not have: switchport port-security mac-address sticky
@@ -699,6 +737,7 @@ ping_remote_host;
 get_ciscoios_version;
 get_port_descriptions;
 get_port_adminstatus;
+get_port_operstatus;
 get_portsecurity_enabled_state;
 get_portsecurity_status;
 get_portsecurity_sticky;
